@@ -1,0 +1,88 @@
+version: "3.8"
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # Two listeners: PLAINTEXT (port 29092) is for other containers on the
+      # Docker network to reach Kafka via the hostname "kafka". PLAINTEXT_HOST
+      # (port 9092) is for tools running on your own machine (mvn spring-boot:run,
+      # the JUnit stress test, kafka-console-consumer, etc). Without this split,
+      # containers and host processes can't both reach the broker correctly.
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: orderapp
+      POSTGRES_PASSWORD: orderapp
+      POSTGRES_MULTIPLE_DATABASES: orderdb,inventorydb,paymentdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./infra/init-multiple-dbs.sh:/docker-entrypoint-initdb.d/init-multiple-dbs.sh
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  order-service:
+    build: ./order-service
+    depends_on:
+      - kafka
+      - postgres
+      - redis
+    ports:
+      - "8081:8081"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/orderdb
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      SPRING_DATA_REDIS_HOST: redis
+
+  inventory-service:
+    build: ./inventory-service
+    depends_on:
+      - kafka
+      - postgres
+      - redis
+    ports:
+      - "8082:8082"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/inventorydb
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      SPRING_DATA_REDIS_HOST: redis
+
+  payment-service:
+    build: ./payment-service
+    depends_on:
+      - kafka
+      - postgres
+    ports:
+      - "8083:8083"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/paymentdb
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+
+volumes:
+  pgdata:

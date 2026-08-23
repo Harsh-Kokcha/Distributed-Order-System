@@ -1,0 +1,42 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: order-service
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/orderdb
+    username: orderapp
+    password: orderapp
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+
+  kafka:
+    bootstrap-servers: localhost:9092
+    # Consumer factories are defined programmatically in KafkaConsumerConfig,
+    # one per event type, so this section only needs the producer config.
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+  cache:
+    type: redis
+    redis:
+      time-to-live: 30000  # 30s TTL - order status changes fast early on, so keep this short
+
+logging:
+  level:
+    com.harsh: DEBUG
