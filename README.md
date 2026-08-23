@@ -111,12 +111,21 @@ actually run it once.
 
 ## AWS deployment
 
-Terraform in `/terraform` provisions RDS Postgres, ElastiCache Redis, MSK
-Serverless (Kafka), ECR repos, and an ECS Fargate cluster. **This is
-infrastructure-as-code, not a live deployment** — see `terraform/README.md`
-for cost estimates, exact steps, and one known gap (MSK Serverless needs IAM
-auth wiring in the Spring Kafka config that isn't done yet). Run it
-yourself with your own AWS credentials; I can't apply AWS changes from here.
+The full stack has been deployed and verified end-to-end on a single AWS
+EC2 instance (Ubuntu, t3.medium, 30 GiB storage) running the exact same
+`docker-compose.yml` used locally — Kafka, Postgres, Redis, and all three
+services as containers on one box. An order was placed and confirmed
+`COMPLETED` from an external client hitting the instance's public IP,
+proving the system runs correctly outside a local machine, not just on
+localhost. The instance was terminated after verification to avoid ongoing
+cost — this was a one-time deployment test, not a system left running.
+
+For a closer-to-production architecture (separate managed services instead
+of one box), Terraform in `/terraform` provisions RDS Postgres, ElastiCache
+Redis, MSK Serverless (Kafka), ECR repos, and an ECS Fargate cluster. **This
+Terraform path is written but not applied** — see `terraform/README.md` for
+cost estimates, exact steps, and one known gap (MSK Serverless needs IAM
+auth wiring in the Spring Kafka config that isn't done yet).
 
 ## Running it locally
 
@@ -168,6 +177,12 @@ units of stock, and asserts exactly 10 succeed and 40 are correctly
 rejected — proving the lock prevents overselling under real concurrent load.
 The test prints the actual elapsed time for the run.
 
+Verified result from an actual run: `50 concurrent requests for 10 units of
+stock -> 10 reserved, 40 rejected, in 2801 ms`. The first run of this test
+actually failed (1 reserved instead of 10) because the Redis lock had no
+retry logic — a real concurrency bug caught by the test itself, fixed by
+adding a bounded retry-with-backoff loop.
+
 ## Honest project status / roadmap
 
 Everything above is real and working (code-complete — see the "not yet run"
@@ -176,13 +191,13 @@ caveat below). What's explicitly **not** done:
 - [ ] The k6 load test has been written but not yet run — don't put a
       throughput/latency number on your resume until you've actually
       executed it and gotten a real one
-- [ ] Terraform is written but not yet applied — nothing is deployed to AWS
-      until you run `terraform apply` yourself
+- [x] Deployed and verified end-to-end on AWS EC2 via Docker Compose (then
+      terminated to stop billing)
+- [ ] Terraform (RDS/ElastiCache/MSK/ECS) is written but not yet applied —
+      that's a separate, more production-like path not yet tested
 - [ ] MSK Serverless IAM auth is not yet wired into the Spring Kafka client
       config (works with local PLAINTEXT Kafka; needs `aws-msk-iam-auth`
       library + SASL config to actually talk to the deployed MSK cluster)
-- [ ] Retry-with-backoff on lock contention instead of immediate rejection
-      (currently rejects immediately, which is simpler but less resilient)
 - [ ] A proper orchestrator-style saga (currently choreography-based —
       services react to each other's events rather than a central
       coordinator driving the flow) — both are valid patterns, worth
