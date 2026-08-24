@@ -71,7 +71,7 @@ Every Kafka listener retries a failing message 3 times (1s apart) before publish
 
 ## Load testing
 
-load-test/order-load-test.js is a k6 script that hits POST /orders with ramping concurrent load (20 → 50 virtual users), asserting p95 < 200ms and p99 < 500ms. Run with k6 run load-test/order-load-test.js (setup steps are in the script's header comment).
+`load-test/order-load-test.js` is a k6 script that hits `POST /orders` with ramping concurrent load (20 → 50 virtual users), asserting p95 < 200ms and p99 < 500ms. Run with `k6 run load-test/order-load-test.js` (setup steps are in the script's header comment).
 
 ## Concurrency stress test
 
