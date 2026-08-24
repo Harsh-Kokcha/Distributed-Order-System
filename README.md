@@ -69,6 +69,10 @@ Every Kafka listener retries a failing message 3 times (1s apart) before publish
 
 `OrderQueryService` checks Redis first, falls back to Postgres on a miss, and populates the cache on the way back (30s TTL). Every status transition in `OrderEventConsumer` explicitly evicts that order's cache entry, so a client polling for status never sees a stale result.
 
+Load testing
+
+load-test/order-load-test.js is a k6 script that hits POST /orders with ramping concurrent load (20 → 50 virtual users), asserting p95 < 200ms and p99 < 500ms. Run with k6 run load-test/order-load-test.js (setup steps are in the script's header comment).
+
 ## Concurrency stress test
 
 ```
