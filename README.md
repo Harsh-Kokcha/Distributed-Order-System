@@ -1,6 +1,6 @@
 # Distributed Order Processing System
 
-📖 **[Explore the interactive architecture walkthrough](https://harsh-kokcha.github.io/Distributed-Order-System/)** — every stage explained with a diagram, including the animated SAGA state machine, the Kafka fan-out sequence, and the concurrency test's actual verified result.
+**[Explore the interactive architecture walkthrough](https://harsh-kokcha.github.io/Distributed-Order-System/)** — every stage explained with a diagram, including the animated SAGA state machine, the Kafka fan-out sequence, and the concurrency test's actual verified result.
 
 A microservices-based order processing pipeline implementing the SAGA pattern for distributed transactions, with concurrency-safety guarantees under load. Built to mirror how systems like e-commerce checkout or payment processing work in practice: independent services that must stay consistent without a single database transaction spanning all of them.
 
