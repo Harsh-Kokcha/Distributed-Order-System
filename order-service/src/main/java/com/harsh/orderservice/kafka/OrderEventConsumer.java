@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.cache.CacheManager;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * This class IS the SAGA orchestrator. It reacts to what inventory-service and
@@ -48,10 +49,19 @@ public class OrderEventConsumer {
     }
 
     @KafkaListener(topics = KafkaTopicConfig.INVENTORY_RESERVED_TOPIC, groupId = "order-service-group", containerFactory = "inventoryReservedListenerFactory")
+    @Transactional
     public void onInventoryReserved(InventoryReservedEvent event) {
         orderRepository.findById(event.orderId()).ifPresent(order -> {
+            try {
+                order.transitionTo(OrderStatus.INVENTORY_RESERVED);
+            } catch (IllegalStateException e) {
+                // Kafka is at-least-once, so this listener can be invoked
+                // again for an order that already moved past this step.
+                // That's an expected, harmless redelivery, not a failure.
+                log.warn("Ignoring redelivered/out-of-order InventoryReservedEvent for order {}: {}", order.getId(), e.getMessage());
+                return;
+            }
             log.info("Inventory reserved for order {}", order.getId());
-            order.transitionTo(OrderStatus.INVENTORY_RESERVED);
             orderRepository.save(order);
             evictCache(order.getId());
             // Next step in the saga: payment-service is independently listening
@@ -61,10 +71,16 @@ public class OrderEventConsumer {
     }
 
     @KafkaListener(topics = KafkaTopicConfig.INVENTORY_REJECTED_TOPIC, groupId = "order-service-group", containerFactory = "inventoryRejectedListenerFactory")
+    @Transactional
     public void onInventoryRejected(InventoryRejectedEvent event) {
         orderRepository.findById(event.orderId()).ifPresent(order -> {
+            try {
+                order.transitionTo(OrderStatus.INVENTORY_REJECTED);
+            } catch (IllegalStateException e) {
+                log.warn("Ignoring redelivered/out-of-order InventoryRejectedEvent for order {}: {}", order.getId(), e.getMessage());
+                return;
+            }
             log.warn("Inventory rejected for order {}: {}", order.getId(), event.reason());
-            order.transitionTo(OrderStatus.INVENTORY_REJECTED);
             orderRepository.save(order);
             evictCache(order.getId());
             // Nothing to compensate - inventory never succeeded, so there's
@@ -73,20 +89,38 @@ public class OrderEventConsumer {
     }
 
     @KafkaListener(topics = KafkaTopicConfig.PAYMENT_CONFIRMED_TOPIC, groupId = "order-service-group", containerFactory = "paymentConfirmedListenerFactory")
+    @Transactional
     public void onPaymentConfirmed(PaymentConfirmedEvent event) {
         orderRepository.findById(event.orderId()).ifPresent(order -> {
+            try {
+                order.transitionTo(OrderStatus.COMPLETED);
+            } catch (IllegalStateException e) {
+                log.warn("Ignoring redelivered/out-of-order PaymentConfirmedEvent for order {}: {}", order.getId(), e.getMessage());
+                return;
+            }
             log.info("Payment confirmed for order {}", order.getId());
-            order.transitionTo(OrderStatus.COMPLETED);
             orderRepository.save(order);
             evictCache(order.getId());
         });
     }
 
     @KafkaListener(topics = KafkaTopicConfig.PAYMENT_REJECTED_TOPIC, groupId = "order-service-group", containerFactory = "paymentRejectedListenerFactory")
+    @Transactional
     public void onPaymentRejected(PaymentRejectedEvent event) {
         orderRepository.findById(event.orderId()).ifPresent(order -> {
+            try {
+                order.transitionTo(OrderStatus.ROLLING_BACK);
+            } catch (IllegalStateException e) {
+                // Most importantly, this guards against a redelivered
+                // PaymentRejectedEvent after the order already finished
+                // rolling back - without it, the compensating
+                // OrderRolledBackEvent below would be published a second
+                // time and inventory-service would release the same stock
+                // twice, silently corrupting the available-stock count.
+                log.warn("Ignoring redelivered/out-of-order PaymentRejectedEvent for order {}: {}", order.getId(), e.getMessage());
+                return;
+            }
             log.warn("Payment rejected for order {}: {}. Triggering compensation.", order.getId(), event.reason());
-            order.transitionTo(OrderStatus.ROLLING_BACK);
             orderRepository.save(order);
             evictCache(order.getId());
 

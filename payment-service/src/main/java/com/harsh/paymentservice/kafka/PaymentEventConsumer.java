@@ -4,15 +4,14 @@ import com.harsh.paymentservice.config.KafkaTopics;
 import com.harsh.paymentservice.events.InventoryReservedEvent;
 import com.harsh.paymentservice.events.PaymentConfirmedEvent;
 import com.harsh.paymentservice.events.PaymentRejectedEvent;
-import com.harsh.paymentservice.model.Account;
-import com.harsh.paymentservice.repository.AccountRepository;
+import com.harsh.paymentservice.model.PaymentOutcome;
+import com.harsh.paymentservice.model.PaymentRecord;
+import com.harsh.paymentservice.service.PaymentProcessingService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
-
-import java.util.Optional;
 
 @Component
 public class PaymentEventConsumer {
@@ -20,11 +19,11 @@ public class PaymentEventConsumer {
     private static final Logger log = LoggerFactory.getLogger(PaymentEventConsumer.class);
     private static final int MAX_RETRIES = 3;
 
-    private final AccountRepository accountRepository;
+    private final PaymentProcessingService paymentProcessingService;
     private final PaymentEventProducer eventProducer;
 
-    public PaymentEventConsumer(AccountRepository accountRepository, PaymentEventProducer eventProducer) {
-        this.accountRepository = accountRepository;
+    public PaymentEventConsumer(PaymentProcessingService paymentProcessingService, PaymentEventProducer eventProducer) {
+        this.paymentProcessingService = paymentProcessingService;
         this.eventProducer = eventProducer;
     }
 
@@ -38,35 +37,48 @@ public class PaymentEventConsumer {
         // upfront, optimistic locking lets both proceed and makes the loser
         // retry. Optimistic locking wins when conflicts are rare, which is
         // the case here (one customer rarely has two orders debiting at once).
+
+        // Kafka only guarantees at-least-once delivery, so this listener can
+        // run more than once for the same orderId (retry after a transient
+        // error, consumer-group rebalance, etc). Check for a prior result
+        // first and replay it instead of charging the account again.
+        var existing = paymentProcessingService.findExisting(event.orderId());
+        if (existing.isPresent()) {
+            log.info("Order {} already processed (outcome={}), skipping re-charge and replaying result",
+                    event.orderId(), existing.get().getOutcome());
+            publish(event.orderId(), existing.get());
+            return;
+        }
+
         for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
             try {
-                Optional<Account> accountOpt = accountRepository.findById(event.customerId());
-                if (accountOpt.isEmpty()) {
-                    eventProducer.publishRejected(new PaymentRejectedEvent(event.orderId(), "Unknown customer: " + event.customerId()));
-                    return;
+                PaymentRecord record = paymentProcessingService.attemptCharge(event.orderId(), event.customerId(), event.amount());
+                if (record.getOutcome() == PaymentOutcome.REJECTED) {
+                    log.info("Payment rejected for customer {} (order {}): {}",
+                            event.customerId(), event.orderId(), record.getReason());
+                } else {
+                    log.info("Charged {} to customer {} for order {}", event.amount(), event.customerId(), event.orderId());
                 }
-
-                Account account = accountOpt.get();
-                boolean debited = account.debit(event.amount());
-                if (!debited) {
-                    log.info("Insufficient funds for customer {} (order {}): balance {}, needed {}",
-                            event.customerId(), event.orderId(), account.getBalance(), event.amount());
-                    eventProducer.publishRejected(new PaymentRejectedEvent(event.orderId(), "Insufficient funds"));
-                    return;
-                }
-
-                accountRepository.save(account);
-                log.info("Charged {} to customer {} for order {}", event.amount(), event.customerId(), event.orderId());
-                eventProducer.publishConfirmed(new PaymentConfirmedEvent(event.orderId()));
+                publish(event.orderId(), record);
                 return;
 
             } catch (OptimisticLockingFailureException e) {
                 log.warn("Optimistic lock conflict on customer {} (attempt {}/{}), retrying", event.customerId(), attempt, MAX_RETRIES);
                 if (attempt == MAX_RETRIES) {
-                    eventProducer.publishRejected(new PaymentRejectedEvent(event.orderId(), "Too many concurrent payment attempts, please retry"));
+                    PaymentRecord rejected = paymentProcessingService.recordRejection(
+                            event.orderId(), "Too many concurrent payment attempts, please retry");
+                    publish(event.orderId(), rejected);
                     return;
                 }
             }
+        }
+    }
+
+    private void publish(java.util.UUID orderId, PaymentRecord record) {
+        if (record.getOutcome() == PaymentOutcome.CONFIRMED) {
+            eventProducer.publishConfirmed(new PaymentConfirmedEvent(orderId));
+        } else {
+            eventProducer.publishRejected(new PaymentRejectedEvent(orderId, record.getReason()));
         }
     }
 }

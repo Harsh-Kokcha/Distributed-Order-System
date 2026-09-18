@@ -2,10 +2,16 @@ package com.harsh.inventoryservice.service;
 
 import com.harsh.inventoryservice.config.RedisLockService;
 import com.harsh.inventoryservice.model.InventoryItem;
+import com.harsh.inventoryservice.model.ReservationRecord;
 import com.harsh.inventoryservice.repository.InventoryRepository;
+import com.harsh.inventoryservice.repository.ReservationRecordRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.Optional;
+import java.util.UUID;
 
 /**
  * Holds the actual reservation/release logic behind the Redis lock, separate
@@ -20,10 +26,13 @@ public class InventoryReservationService {
 
     private final InventoryRepository inventoryRepository;
     private final RedisLockService lockService;
+    private final ReservationRecordRepository reservationRecordRepository;
 
-    public InventoryReservationService(InventoryRepository inventoryRepository, RedisLockService lockService) {
+    public InventoryReservationService(InventoryRepository inventoryRepository, RedisLockService lockService,
+                                        ReservationRecordRepository reservationRecordRepository) {
         this.inventoryRepository = inventoryRepository;
         this.lockService = lockService;
+        this.reservationRecordRepository = reservationRecordRepository;
     }
 
     public enum Result { RESERVED, INSUFFICIENT_STOCK, UNKNOWN_PRODUCT, LOCK_CONTENTION }
@@ -55,20 +64,39 @@ public class InventoryReservationService {
         return null;
     }
 
-    public Result reserve(String productId, int quantity) {
+    // Kafka only guarantees at-least-once delivery, so onOrderCreated can be
+    // invoked more than once for the same orderId. Without a per-order
+    // record, a redelivery would reserve the same stock twice. The record
+    // is written in the same transaction as the stock update, so a crash
+    // between them can't leave the two out of sync; a redelivery that lands
+    // after that transaction commits is caught by the check below instead
+    // of re-running the reservation.
+    @Transactional
+    public Result reserve(UUID orderId, String productId, int quantity) {
+        Optional<ReservationRecord> existing = reservationRecordRepository.findById(orderId);
+        if (existing.isPresent()) {
+            log.info("Order {} already processed for product {} (outcome={}), skipping duplicate reservation",
+                    orderId, productId, existing.get().getOutcome());
+            return Result.valueOf(existing.get().getOutcome());
+        }
+
         String lockToken = acquireLockWithRetry(productId);
         if (lockToken == null) {
+            // Not a terminal outcome - deliberately not recorded, so a retry/redelivery tries again.
             return Result.LOCK_CONTENTION;
         }
         try {
             InventoryItem item = inventoryRepository.findById(productId).orElse(null);
             if (item == null) {
+                reservationRecordRepository.save(new ReservationRecord(orderId, productId, quantity, Result.UNKNOWN_PRODUCT.name()));
                 return Result.UNKNOWN_PRODUCT;
             }
             if (!item.reserve(quantity)) {
+                reservationRecordRepository.save(new ReservationRecord(orderId, productId, quantity, Result.INSUFFICIENT_STOCK.name()));
                 return Result.INSUFFICIENT_STOCK;
             }
             inventoryRepository.save(item);
+            reservationRecordRepository.save(new ReservationRecord(orderId, productId, quantity, Result.RESERVED.name()));
             return Result.RESERVED;
         } finally {
             lockService.unlock(productId, lockToken);

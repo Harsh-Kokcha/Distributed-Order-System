@@ -27,7 +27,7 @@ public class InventoryEventConsumer {
     @KafkaListener(topics = KafkaTopics.ORDER_CREATED_TOPIC, groupId = "inventory-service-group",
             containerFactory = "orderCreatedListenerFactory")
     public void onOrderCreated(OrderCreatedEvent event) {
-        var result = reservationService.reserve(event.productId(), event.quantity());
+        var result = reservationService.reserve(event.orderId(), event.productId(), event.quantity());
 
         switch (result) {
             case RESERVED -> {

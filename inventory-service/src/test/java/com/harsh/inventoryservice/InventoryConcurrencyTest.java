@@ -12,6 +12,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -76,7 +77,12 @@ class InventoryConcurrencyTest {
                     // this is what actually exercises the race condition
                     // instead of just running requests one after another.
                     startLine.await();
-                    var result = reservationService.reserve(PRODUCT_ID, 1);
+                    // Each simulated request is a distinct order - reserve()
+                    // is now idempotent per orderId, so reusing one orderId
+                    // across all 50 threads would make 49 of them look like
+                    // redeliveries of the same order instead of 50 separate
+                    // concurrent orders.
+                    var result = reservationService.reserve(UUID.randomUUID(), PRODUCT_ID, 1);
                     if (result == InventoryReservationService.Result.RESERVED) {
                         successCount.incrementAndGet();
                     } else {
